@@ -1,0 +1,43 @@
+modLoader = "javafml"
+loaderVersion = "[10,)"
+license = "All Rights Reserved"
+issueTrackerURL = "https://github.com/XuYangJerry/LightChatPatch/issues"
+
+[[mods]]
+modId = "light_chat_patch"
+version = "${version}"
+displayName = "Light Chat Patch"
+authors = "XuYangJerry"
+description = '''
+Improvements for the Minecraft chat system: copy/reply/+1 on messages, extended cross-world chat input history, and draft preservation when closing the chat screen or quitting the game.
+'''
+displayURL = "https://github.com/XuYangJerry/LightChatPatch"
+modUrl = "https://github.com/XuYangJerry/LightChatPatch"
+#logoFile = ""
+
+[features.light_chat_patch]
+javaVersion = "[21,)"
+
+[[dependencies.light_chat_patch]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.11,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.light_chat_patch]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.11,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.light_chat_patch]]
+modId = "architectury"
+type = "required"
+versionRange = "[19.0.1,)"
+ordering = "AFTER"
+side = "CLIENT"
+
+[[mixins]]
+config = "light_chat_patch.mixins.json"

@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "package": "top.xuyangjerry.mcmod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "minVersion": "0.8",
+  "client": [
+    "client.ChatComponentAccess",
+    "client.ChatScreenAccess",
+    "client.OptionsSubScreenAccess",
+    "client.ScreenAccess"
+  ],
+  "mixins": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

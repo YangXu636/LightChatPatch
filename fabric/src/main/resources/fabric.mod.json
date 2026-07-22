@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "light_chat_patch",
+  "version": "${version}",
+  "name": "Light Chat Patch",
+  "description": "Improvements for the Minecraft chat system: copy/reply/+1 on messages, extended cross-world chat input history, and draft preservation when closing the chat screen or quitting the game.",
+  "authors": [
+    "XuYangJerry"
+  ],
+  "contact": {
+    "homepage": "https://github.com/XuYangJerry",
+    "sources": "https://github.com/XuYangJerry/LightChatPatch"
+  },
+  "license": "All Rights Reserved",
+  "icon": "assets/light_chat_patch/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "top.xuyangjerry.mcmod.fabric.ExampleModFabric"
+    ],
+    "client": [
+      "top.xuyangjerry.mcmod.fabric.client.ExampleModFabricClient"
+    ],
+    "modmenu": [
+      "top.xuyangjerry.mcmod.fabric.client.LcpModMenuApiImpl"
+    ]
+  },
+  "mixins": [
+    "light_chat_patch.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "architectury": ">=19.0.1",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": ">=17.0.0"
+  }
+}
