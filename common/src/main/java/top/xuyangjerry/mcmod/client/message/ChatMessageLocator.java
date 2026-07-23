@@ -40,7 +40,7 @@ public final class ChatMessageLocator {
         if (trimmed.isEmpty() || all.isEmpty()) return null;
 
         double chatScale = mc.options.chatScale().get();
-        if (chatScale <= 0.0) return null; // chat hidden
+        if (chatScale <= 0.0) return null;
 
         int screenHeight = mc.getWindow().getGuiScaledHeight();
         int chatBottom = Mth.floor((screenHeight - 40) / (float) chatScale);
@@ -55,23 +55,19 @@ public final class ChatMessageLocator {
         int trimmedIndex = visualLineIndex + scrollbarPos;
         if (trimmedIndex >= trimmed.size()) return null;
 
-        // Also check upper bound: linesPerPage
         double chatHeightFocused = mc.options.chatHeightFocused().get();
         int chatHeight = Mth.floor(160.0 * chatHeightFocused + 20.0);
         int linesPerPage = chatHeight / entryHeight;
         if (visualLineIndex >= linesPerPage) return null;
 
-        // Map trimmedIndex back to allMessages index.
-        // Each GuiMessage produces 1+ Lines; the last line has endOfEntry == true.
-        // messageIndex = count of endOfEntry==true in trimmed[0..trimmedIndex-1]
-        int messageIndex = 0;
-        for (int i = 0; i < trimmedIndex; i++) {
-            if (trimmed.get(i).endOfEntry()) {
-                messageIndex++;
+        // 使用 addedTime 定位消息：多行消息的所有行共享相同的 addedTime
+        int addedTime = trimmed.get(trimmedIndex).addedTime();
+        for (GuiMessage msg : all) {
+            if (msg.addedTime() == addedTime) {
+                return msg;
             }
         }
-        if (messageIndex >= all.size()) return null;
-        return all.get(messageIndex);
+        return null;
     }
 
     /**

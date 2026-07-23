@@ -8,7 +8,6 @@ import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
-import org.lwjgl.glfw.GLFW;
 import top.xuyangjerry.mcmod.config.ChatHistoryView;
 import top.xuyangjerry.mcmod.config.LcpConfig;
 
@@ -63,9 +62,7 @@ public class LightChatPatchConfigScreen extends Screen {
         y += ROW_HEIGHT;
         addRow(controlX, y, "preserveChatHistory", createOnOff(config.isPreserveChatHistory(), config::setPreserveChatHistory));
         y += ROW_HEIGHT;
-        addRow(controlX, y, "sendKey", createKeyButton(config.getSendKey(), true));
-        y += ROW_HEIGHT;
-        addRow(controlX, y, "newlineKey", createKeyButton(config.getNewlineKey(), false));
+        addRow(controlX, y, "rangeSelectToggle", createOnOff(config.isRangeSelectToggle(), config::setRangeSelectToggle));
 
         maxScroll = Math.max(0, y - (contentBottom - contentTop));
 
@@ -113,30 +110,6 @@ public class LightChatPatchConfigScreen extends Screen {
                 .withValues(ChatHistoryView.values())
                 .displayOnlyValue()
                 .create(0, 0, CONTROL_WIDTH, 20, Component.empty(), (btn, val) -> config.setChatHistoryView(val));
-    }
-
-    private AbstractWidget createKeyButton(int currentKey, boolean isSendKey) {
-        return CycleButton.<Integer>builder(
-                        k -> Component.literal(k == GLFW.GLFW_KEY_UNKNOWN ? "None" : getKeyName(k)),
-                        currentKey)
-                .withValues(isSendKey
-                        ? new Integer[]{GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER, GLFW.GLFW_KEY_TAB}
-                        : new Integer[]{GLFW.GLFW_KEY_UNKNOWN, GLFW.GLFW_KEY_KP_ENTER, GLFW.GLFW_KEY_TAB})
-                .displayOnlyValue()
-                .create(0, 0, CONTROL_WIDTH, 20, Component.empty(), (btn, val) -> {
-                    if (isSendKey) config.setSendKey(val);
-                    else config.setNewlineKey(val);
-                });
-    }
-
-    private static String getKeyName(int key) {
-        if (key == GLFW.GLFW_KEY_ENTER) return "Enter";
-        if (key == GLFW.GLFW_KEY_KP_ENTER) return "Keypad Enter";
-        if (key == GLFW.GLFW_KEY_TAB) return "Tab";
-        if (key >= GLFW.GLFW_KEY_A && key <= GLFW.GLFW_KEY_Z) {
-            return Character.toString((char) ('A' + key - GLFW.GLFW_KEY_A));
-        }
-        return "Key " + key;
     }
 
     @Override

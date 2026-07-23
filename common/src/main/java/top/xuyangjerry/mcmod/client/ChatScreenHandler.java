@@ -16,9 +16,14 @@ import top.xuyangjerry.mcmod.client.message.ChatMessageLocator;
 import top.xuyangjerry.mcmod.client.message.MessageActions;
 import top.xuyangjerry.mcmod.client.message.MessageInfo;
 import top.xuyangjerry.mcmod.client.message.MessageJumpManager;
+import top.xuyangjerry.mcmod.LightChatPatch;
+import top.xuyangjerry.mcmod.client.message.ReplyTracker;
+import top.xuyangjerry.mcmod.client.screen.ForwardTargetScreen;
 import top.xuyangjerry.mcmod.client.screen.LightChatPatchConfigScreen;
+import top.xuyangjerry.mcmod.client.screen.PlayerFilterScreen;
 import top.xuyangjerry.mcmod.config.ChatHistoryView;
 import top.xuyangjerry.mcmod.config.LcpConfig;
+import top.xuyangjerry.mcmod.history.ChatBoxHistoryManager;
 import top.xuyangjerry.mcmod.history.ChatDraftManager;
 import top.xuyangjerry.mcmod.history.ChatHistoryManager;
 import top.xuyangjerry.mcmod.mixin.client.ChatComponentAccess;
@@ -26,7 +31,9 @@ import top.xuyangjerry.mcmod.mixin.client.ChatScreenAccess;
 import top.xuyangjerry.mcmod.mixin.client.OptionsSubScreenAccess;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 /**
@@ -37,6 +44,7 @@ public final class ChatScreenHandler {
 
     private static final WeakHashMap<ChatScreen, ChatScreenState> STATES = new WeakHashMap<>();
     private static boolean wasLevelNull = true;
+    private static boolean chatBoxHistoryLoaded = false;
 
     private ChatScreenHandler() {
     }
@@ -52,13 +60,28 @@ public final class ChatScreenHandler {
      */
     public static void onClientTick() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level != null && wasLevelNull) {
-            wasLevelNull = false;
-            if (LcpConfig.getInstance().isPreserveChatHistory()) {
-                ChatHistoryManager.loadToRecentChat();
+        if (mc.level != null) {
+            if (wasLevelNull) {
+                wasLevelNull = false;
+                chatBoxHistoryLoaded = false;
+                LightChatPatch.LOGGER.info("[ChatScreenHandler] Entered world, preserve={}", LcpConfig.getInstance().isPreserveChatHistory());
+                if (LcpConfig.getInstance().isPreserveChatHistory()) {
+                    ChatHistoryManager.loadToRecentChat();
+                    ChatBoxHistoryManager.loadChatBoxHistory();
+                    // 检查是否加载成功（worldId 可能尚未就绪）
+                    chatBoxHistoryLoaded = ChatBoxHistoryManager.isLoadable();
+                }
+            } else if (!chatBoxHistoryLoaded && LcpConfig.getInstance().isPreserveChatHistory()) {
+                // 重试加载聊天框历史（首次进入世界时 worldId 可能未就绪）
+                ChatBoxHistoryManager.loadChatBoxHistory();
+                chatBoxHistoryLoaded = ChatBoxHistoryManager.isLoadable();
             }
         } else if (mc.level == null) {
+            if (!wasLevelNull && LcpConfig.getInstance().isPreserveChatHistory()) {
+                ChatBoxHistoryManager.saveChatBoxHistory();
+            }
             wasLevelNull = true;
+            chatBoxHistoryLoaded = false;
         }
     }
 
@@ -75,8 +98,17 @@ public final class ChatScreenHandler {
         STATES.put(screen, state);
 
         // 加载历史到 recentChat
+        LightChatPatch.LOGGER.info("[ChatScreenHandler] ChatScreen init, preserve={}", LcpConfig.getInstance().isPreserveChatHistory());
         if (LcpConfig.getInstance().isPreserveChatHistory()) {
             ChatHistoryManager.loadToRecentChat();
+            // 重置 historyPos 到末尾，确保 Up 键能正确导航到最近加载的历史
+            ((ChatScreenAccess) screen).lcp$setHistoryPos(
+                    Minecraft.getInstance().gui.getChat().getRecentChat().size());
+            // 也加载聊天框历史（onClientTick 可能因 worldId 未就绪而失败）
+            if (!chatBoxHistoryLoaded) {
+                ChatBoxHistoryManager.loadChatBoxHistory();
+                chatBoxHistoryLoaded = true;
+            }
         }
 
         // 将当前所有消息注册到 MessageJumpManager
@@ -109,10 +141,14 @@ public final class ChatScreenHandler {
             return false;
         }
 
-        // Escape 关闭右键菜单或取消回复
+        // Escape 关闭右键菜单、退出选择模式或取消回复
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (state.menuOpen) {
                 state.menuOpen = false;
+                return true;
+            }
+            if (state.isRangeSelectMode) {
+                state.exitSelectionMode();
                 return true;
             }
             if (state.replyingTo != null) {
@@ -134,8 +170,21 @@ public final class ChatScreenHandler {
                     String replyText = Component.translatable("light_chat_patch.reply.format",
                             state.replyingTo.getSender(), state.replyingTo.getContent(), input).getString();
                     ((ChatScreenAccess) screen).lcp$getInput().setValue(replyText);
+
+                    // 设置 pendingReply，等待服务端回环后建立关联
+                    if (state.replyingToMessageId != null) {
+                        ReplyTracker.getInstance().setPendingReply(
+                                new ReplyTracker.PendingReply(
+                                        state.replyingToMessageId,
+                                        state.replyingTo.getSender(),
+                                        state.replyingTo.getContent(),
+                                        replyText
+                                )
+                        );
+                    }
                 }
                 state.replyingTo = null;
+                state.replyingToMessageId = null;
             }
         }
 
@@ -204,6 +253,10 @@ public final class ChatScreenHandler {
         }
 
         persistRecentChat();
+
+        if (LcpConfig.getInstance().isPreserveChatHistory()) {
+            ChatBoxHistoryManager.saveChatBoxHistory();
+        }
     }
 
     private static String getInputValue(ChatScreen screen) {
@@ -230,8 +283,10 @@ public final class ChatScreenHandler {
         ChatComponentAccess access = (ChatComponentAccess) chat;
         List<GuiMessage> allMessages = access.lcp$getAllMessages();
         MessageJumpManager jumpMgr = MessageJumpManager.getInstance();
+        ReplyTracker replyTracker = ReplyTracker.getInstance();
         for (GuiMessage msg : allMessages) {
-            jumpMgr.getMessageId(msg);
+            String id = jumpMgr.getMessageId(msg);
+            replyTracker.onNewMessage(msg, id);
         }
     }
 
@@ -257,9 +312,19 @@ public final class ChatScreenHandler {
             drawReplyBar(screen, g, state, mouseX, mouseY);
         }
 
+        // 选择模式：绘制选择覆盖层 + 确认按钮
+        if (state.isRangeSelectMode) {
+            drawSelectionModeOverlay(screen, g, state, mouseX, mouseY);
+        }
+
         // 右键菜单优先
         if (state.menuOpen) {
             drawMenu(g, mouseX, mouseY, state);
+            return;
+        }
+
+        // 选择模式下不显示常规悬停按钮
+        if (state.isRangeSelectMode) {
             return;
         }
 
@@ -274,7 +339,7 @@ public final class ChatScreenHandler {
         }
 
         MessageInfo info = MessageInfo.from(msg);
-        if (info == null || !info.isPlayerMessage()) {
+        if (info == null) {
             return;
         }
 
@@ -309,6 +374,11 @@ public final class ChatScreenHandler {
         String copyLabel = Component.translatable("light_chat_patch.action.copy").getString();
         String replyLabel = Component.translatable("light_chat_patch.action.reply").getString();
         String plusOneLabel = Component.translatable("light_chat_patch.action.plus_one").getString();
+        String viewOriginalLabel = Component.translatable("light_chat_patch.action.view_original").getString();
+        String forwardLabel = Component.translatable("light_chat_patch.action.forward").getString();
+
+        // 检查悬停消息是否为回复消息
+        boolean isReplyMessage = ReplyTracker.getInstance().getOriginalMessageId(state.hoverMessage.getMessage()) != null;
 
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Integer> widths = new java.util.ArrayList<>();
@@ -326,6 +396,34 @@ public final class ChatScreenHandler {
             labels.add(plusOneLabel);
             widths.add(font.width(plusOneLabel) + 8);
             actions.add(ChatScreenState.ACTION_PLUS_ONE);
+        }
+
+        if (isReplyMessage) {
+            labels.add(viewOriginalLabel);
+            widths.add(font.width(viewOriginalLabel) + 8);
+            actions.add(ChatScreenState.ACTION_VIEW_ORIGINAL);
+        }
+
+        labels.add(forwardLabel);
+        widths.add(font.width(forwardLabel) + 8);
+        actions.add(ChatScreenState.ACTION_FORWARD);
+
+        // 计算按钮组总宽度
+        int totalWidth = 0;
+        for (int w : widths) {
+            totalWidth += w;
+        }
+        if (!widths.isEmpty()) {
+            totalWidth += (widths.size() - 1) * gap;
+        }
+
+        // 悬浮菜单始终靠右：如果超出屏幕右边界，则靠屏幕右边缘
+        int screenWidth = Minecraft.getInstance().getWindow().getGuiScaledWidth();
+        if (x + totalWidth > screenWidth) {
+            x = screenWidth - totalWidth;
+        }
+        if (x < 0) {
+            x = 0;
         }
 
         for (int i = 0; i < labels.size(); i++) {
@@ -347,15 +445,97 @@ public final class ChatScreenHandler {
     private static void drawMenu(GuiGraphics g, int mouseX, int mouseY, ChatScreenState state) {
         state.menuOptions.clear();
 
+        // 右键菜单在鼠标点击位置
         int menuX = state.menuX;
         int menuY = state.menuY;
         int optionHeight = 16;
 
-        boolean showPlusOne = !state.menuMessageIsSelf || LcpConfig.getInstance().isPlusOneSelf();
         net.minecraft.client.gui.Font font = Minecraft.getInstance().font;
+        int screenWidth = Minecraft.getInstance().getWindow().getGuiScaledWidth();
+        int screenHeight = Minecraft.getInstance().getWindow().getGuiScaledHeight();
+
+        // 选择模式下的右键菜单
+        if (state.isRangeSelectMode) {
+            java.util.List<String> labels = new java.util.ArrayList<>();
+            java.util.List<Integer> actions = new java.util.ArrayList<>();
+
+            // 有范围选择时，显示范围操作菜单
+            if (state.rangeStart != null && state.rangeEnd != null) {
+                String rangeActionKey = LcpConfig.getInstance().isRangeSelectToggle()
+                        ? "light_chat_patch.action.toggle_range"
+                        : "light_chat_patch.action.select_all_in_range";
+                String rangeActionLabel = Component.translatable(rangeActionKey).getString();
+                String selectBySenderLabel = Component.translatable("light_chat_patch.action.select_by_sender").getString();
+                String clearRangeLabel = Component.translatable("light_chat_patch.action.clear_range").getString();
+
+                labels.add(rangeActionLabel);
+                actions.add(ChatScreenState.ACTION_SELECT_ALL_IN_RANGE);
+
+                labels.add(selectBySenderLabel);
+                actions.add(ChatScreenState.ACTION_SELECT_BY_SENDER);
+
+                labels.add(clearRangeLabel);
+                actions.add(ChatScreenState.ACTION_CLEAR_RANGE);
+            } else {
+                // 无范围选择时，显示常规选择菜单
+                String setStartLabel = Component.translatable("light_chat_patch.action.set_range_start").getString();
+                String setEndLabel = Component.translatable("light_chat_patch.action.set_range_end").getString();
+                String selectBySenderLabel = Component.translatable("light_chat_patch.action.select_by_sender").getString();
+                int selectedCount = getAllSelectedMessages(state).size();
+                String confirmLabel = Component.translatable("light_chat_patch.select.confirm", selectedCount).getString();
+                String exitLabel = Component.translatable("light_chat_patch.action.exit_select_mode").getString();
+
+                labels.add(setStartLabel);
+                actions.add(ChatScreenState.ACTION_SET_RANGE_START);
+
+                labels.add(setEndLabel);
+                actions.add(ChatScreenState.ACTION_SET_RANGE_END);
+
+                labels.add(selectBySenderLabel);
+                actions.add(ChatScreenState.ACTION_SELECT_BY_SENDER);
+
+                labels.add(confirmLabel);
+                actions.add(ChatScreenState.ACTION_CONFIRM_FORWARD);
+
+                labels.add(exitLabel);
+                actions.add(ChatScreenState.ACTION_EXIT_SELECT_MODE);
+            }
+
+            int menuWidth = 80;
+            for (String label : labels) {
+                int w = font.width(label) + 12;
+                if (w > menuWidth) menuWidth = w;
+            }
+            int menuHeight = labels.size() * optionHeight;
+
+            if (menuX + menuWidth > screenWidth) menuX = screenWidth - menuWidth;
+            if (menuX < 0) menuX = 0;
+            if (menuY + menuHeight > screenHeight) menuY = screenHeight - menuHeight;
+            if (menuY < 0) menuY = 0;
+
+            g.fill(menuX - 1, menuY - 1, menuX + menuWidth + 1, menuY + menuHeight + 1, 0xFF222222);
+            g.fill(menuX, menuY, menuX + menuWidth, menuY + menuHeight, 0xE0000000);
+
+            for (int i = 0; i < labels.size(); i++) {
+                int oy = menuY + i * optionHeight;
+                boolean hovered = mouseX >= menuX && mouseX <= menuX + menuWidth
+                        && mouseY >= oy && mouseY <= oy + optionHeight;
+                if (hovered) {
+                    g.fill(menuX, oy, menuX + menuWidth, oy + optionHeight, 0xFF555555);
+                }
+                g.drawString(font, labels.get(i), menuX + 6, oy + 4, 0xFFFFFFFF);
+                state.menuOptions.add(new int[]{menuX, oy, menuX + menuWidth, oy + optionHeight, actions.get(i)});
+            }
+            return;
+        }
+
+        // 常规右键菜单
+        boolean showPlusOne = !state.menuMessageIsSelf || LcpConfig.getInstance().isPlusOneSelf();
         String copyLabel = Component.translatable("light_chat_patch.action.copy").getString();
         String replyLabel = Component.translatable("light_chat_patch.action.reply").getString();
         String plusOneLabel = Component.translatable("light_chat_patch.action.plus_one").getString();
+        String viewOriginalLabel = Component.translatable("light_chat_patch.action.view_original").getString();
+        String forwardLabel = Component.translatable("light_chat_patch.action.forward").getString();
 
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Integer> actions = new java.util.ArrayList<>();
@@ -371,6 +551,14 @@ public final class ChatScreenHandler {
             actions.add(ChatScreenState.ACTION_PLUS_ONE);
         }
 
+        if (state.menuMessageIsReply) {
+            labels.add(viewOriginalLabel);
+            actions.add(ChatScreenState.ACTION_VIEW_ORIGINAL);
+        }
+
+        labels.add(forwardLabel);
+        actions.add(ChatScreenState.ACTION_FORWARD);
+
         int menuWidth = 80;
         for (String label : labels) {
             int w = font.width(label) + 12;
@@ -378,15 +566,11 @@ public final class ChatScreenHandler {
         }
         int menuHeight = labels.size() * optionHeight;
 
-        // 保持菜单在屏幕内
-        int screenWidth = Minecraft.getInstance().getWindow().getGuiScaledWidth();
-        int screenHeight = Minecraft.getInstance().getWindow().getGuiScaledHeight();
-        if (menuX + menuWidth > screenWidth) {
-            menuX = screenWidth - menuWidth - 4;
-        }
-        if (menuY + menuHeight > screenHeight) {
-            menuY = screenHeight - menuHeight - 4;
-        }
+        // 确保菜单完全在屏幕内
+        if (menuX + menuWidth > screenWidth) menuX = screenWidth - menuWidth;
+        if (menuX < 0) menuX = 0;
+        if (menuY + menuHeight > screenHeight) menuY = screenHeight - menuHeight;
+        if (menuY < 0) menuY = 0;
 
         // 背景边框
         g.fill(menuX - 1, menuY - 1, menuX + menuWidth + 1, menuY + menuHeight + 1, 0xFF222222);
@@ -442,6 +626,56 @@ public final class ChatScreenHandler {
             return true;
         }
 
+        // 选择模式下的点击处理
+        if (state.isRangeSelectMode) {
+            // 点击确认转发按钮
+            if (state.confirmButtonBounds != null) {
+                int[] b = state.confirmButtonBounds;
+                if (mx >= b[0] && mx <= b[2] && my >= b[1] && my <= b[3]) {
+                    confirmForward(screen, state);
+                    return true;
+                }
+            }
+
+            // 右键：打开选择模式菜单
+            if (button == 1) {
+                GuiMessage msg = ChatMessageLocator.findMessageAtMouse(mx, my);
+                if (msg != null) {
+                    MessageInfo info = MessageInfo.from(msg);
+                    if (info != null) {
+                        state.menuOpen = true;
+                        state.menuX = mx;
+                        state.menuY = my;
+                        state.menuMessage = info;
+                        return true;
+                    }
+                }
+                // 右键空白处也打开菜单（不需要对应消息）
+                state.menuOpen = true;
+                state.menuX = mx;
+                state.menuY = my;
+                state.menuMessage = null;
+                return true;
+            }
+
+            // 左键：切换单条消息选中状态
+            if (button == 0) {
+                GuiMessage msg = ChatMessageLocator.findMessageAtMouse(mx, my);
+                if (msg != null) {
+                    MessageInfo info = MessageInfo.from(msg);
+                    if (info != null) {
+                        if (state.selectedMessages.contains(msg)) {
+                            state.selectedMessages.remove(msg);
+                        } else {
+                            state.selectedMessages.add(msg);
+                        }
+                        return true;
+                    }
+                }
+            }
+            return true; // 选择模式下消费所有点击
+        }
+
         // 左键点击悬停按钮
         if (button == 0 && state.hoverMessage != null) {
             for (int[] bounds : state.hoverButtons) {
@@ -461,11 +695,13 @@ public final class ChatScreenHandler {
                     Minecraft mc = Minecraft.getInstance();
                     if (mc.player != null) {
                         boolean isSelf = mc.player.getName().getString().equals(info.getSender());
+                        boolean isReply = ReplyTracker.getInstance().getOriginalMessageId(msg) != null;
                         state.menuOpen = true;
                         state.menuX = mx;
                         state.menuY = my;
                         state.menuMessage = info;
                         state.menuMessageIsSelf = isSelf;
+                        state.menuMessageIsReply = isReply;
                         return true;
                     }
                 }
@@ -491,6 +727,100 @@ public final class ChatScreenHandler {
                 boolean isSelf = mc.player.getName().getString().equals(info.getSender());
                 if (isSelf && !LcpConfig.getInstance().isPlusOneSelf()) return;
                 screen.handleChatInput(info.getContent(), true);
+            }
+            case ChatScreenState.ACTION_VIEW_ORIGINAL -> {
+                if (state != null) {
+                    String originalId = ReplyTracker.getInstance().getOriginalMessageId(info.getMessage());
+                    if (originalId != null) {
+                        GuiMessage original = MessageJumpManager.getInstance().findMessageById(originalId);
+                        if (original != null) {
+                            boolean jumped = MessageJumpManager.getInstance().jumpToMessage(original);
+                            if (jumped) {
+                                state.highlightedMessageId = originalId;
+                                state.highlightEndTime = System.currentTimeMillis() + 3000;
+                            }
+                        }
+                    }
+                }
+            }
+            case ChatScreenState.ACTION_FORWARD -> {
+                // 进入选择模式，反转选中当前消息
+                if (state != null) {
+                    if (!state.isRangeSelectMode) {
+                        state.isRangeSelectMode = true;
+                        state.selectedMessages.clear();
+                        state.rangeStart = null;
+                        state.rangeEnd = null;
+                    }
+                    if (info != null) {
+                        if (state.selectedMessages.contains(info.getMessage())) {
+                            state.selectedMessages.remove(info.getMessage());
+                        } else {
+                            state.selectedMessages.add(info.getMessage());
+                        }
+                    }
+                }
+            }
+            case ChatScreenState.ACTION_SET_RANGE_START -> {
+                if (state != null && info != null) {
+                    state.rangeStart = info.getMessage();
+                }
+            }
+            case ChatScreenState.ACTION_SET_RANGE_END -> {
+                if (state != null && info != null) {
+                    state.rangeEnd = info.getMessage();
+                    // 设置终点后立即规范化选区（翻转起始点/终止点）
+                    if (state.rangeStart != null) {
+                        normalizeRange(state);
+                        Minecraft mc = Minecraft.getInstance();
+                        mc.setScreen(new top.xuyangjerry.mcmod.client.screen.RangeActionScreen(screen, state));
+                    }
+                }
+            }
+            case ChatScreenState.ACTION_CLEAR_RANGE -> {
+                if (state != null) {
+                    state.rangeStart = null;
+                    state.rangeEnd = null;
+                }
+            }
+            case ChatScreenState.ACTION_SELECT_ALL_IN_RANGE -> {
+                if (state != null) {
+                    applyRangeSelection(state);
+                }
+            }
+            case ChatScreenState.ACTION_SELECT_BY_SENDER -> {
+                if (state != null) {
+                    Minecraft mc = Minecraft.getInstance();
+                    // 如果有范围选择，只收集范围内发送者
+                    List<GuiMessage> targetMessages;
+                    if (state.rangeStart != null && state.rangeEnd != null) {
+                        targetMessages = getMessagesInRange(state);
+                    } else {
+                        ChatComponent chat = mc.gui.getChat();
+                        ChatComponentAccess access = (ChatComponentAccess) chat;
+                        targetMessages = access.lcp$getAllMessages();
+                    }
+                    java.util.Set<String> senders = new java.util.LinkedHashSet<>();
+                    for (GuiMessage m : targetMessages) {
+                        MessageInfo mi = MessageInfo.from(m);
+                        if (mi != null) {
+                            senders.add(mi.getSender());
+                        }
+                    }
+                    if (!senders.isEmpty()) {
+                        mc.setScreen(new PlayerFilterScreen(mc.screen, state, new ArrayList<>(senders)));
+                    }
+                }
+            }
+            case ChatScreenState.ACTION_CONFIRM_FORWARD -> {
+                if (state != null) {
+                    confirmForward(screen, state);
+                }
+            }
+            case ChatScreenState.ACTION_EXIT_SELECT_MODE -> {
+                if (state != null) {
+                    state.exitSelectionMode();
+                }
             }
         }
     }
@@ -683,6 +1013,289 @@ public final class ChatScreenHandler {
                 state.highlightedMessageId = state.replyingToMessageId;
                 state.highlightEndTime = System.currentTimeMillis() + 3000;
             }
+        }
+    }
+
+    // ==================== Selection Mode (多选转发) ====================
+
+    private static void drawSelectionModeOverlay(ChatScreen screen, GuiGraphics g, ChatScreenState state, int mouseX, int mouseY) {
+        Minecraft mc = Minecraft.getInstance();
+        net.minecraft.client.gui.Font font = mc.font;
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+        List<GuiMessage.Line> trimmed = access.lcp$getTrimmedMessages();
+
+        double chatScale = mc.options.chatScale().get();
+        if (chatScale <= 0.0) return;
+
+        int screenHeight = mc.getWindow().getGuiScaledHeight();
+        int chatBottom = Mth.floor((screenHeight - 40) / (float) chatScale);
+        double chatLineSpacing = mc.options.chatLineSpacing().get();
+        int entryHeight = Math.max(1, (int) (9.0 * (1.0 + chatLineSpacing)));
+        int scrollbarPos = access.lcp$getChatScrollbarPos();
+
+        int chatRightEdge = ChatMessageLocator.getChatRightEdge();
+        int chatLeftEdge = 0;
+
+        double chatHeightFocused = mc.options.chatHeightFocused().get();
+        int chatHeight = Mth.floor(160.0 * chatHeightFocused + 20.0);
+        int linesPerPage = chatHeight / entryHeight;
+
+        // 建立 addedTime -> GuiMessage 的映射（时间戳唯一标识消息）
+        java.util.Map<Integer, GuiMessage> timeToMessage = new java.util.HashMap<>();
+        for (GuiMessage msg : allMessages) {
+            timeToMessage.put(msg.addedTime(), msg);
+        }
+
+        // 建立 addedTime -> {startLine, endLine} 的映射（按时间戳分组 trimmed lines）
+        java.util.Map<Integer, int[]> timeToRange = new java.util.HashMap<>();
+        if (!trimmed.isEmpty()) {
+            int currentTime = trimmed.get(0).addedTime();
+            int rangeStart = 0;
+            for (int i = 0; i < trimmed.size(); i++) {
+                GuiMessage.Line line = trimmed.get(i);
+                if (line.addedTime() != currentTime) {
+                    timeToRange.put(currentTime, new int[]{rangeStart, i - 1});
+                    currentTime = line.addedTime();
+                    rangeStart = i;
+                }
+            }
+            timeToRange.put(currentTime, new int[]{rangeStart, trimmed.size() - 1});
+        }
+
+        // 收集需要渲染的消息：已选消息 + rangeStart/rangeEnd（确保标记始终显示）
+        Set<GuiMessage> messagesToRender = new LinkedHashSet<>(state.selectedMessages);
+        if (state.rangeStart != null) messagesToRender.add(state.rangeStart);
+        if (state.rangeEnd != null) messagesToRender.add(state.rangeEnd);
+
+        for (GuiMessage msg : messagesToRender) {
+            int msgTime = msg.addedTime();
+            int[] range = timeToRange.get(msgTime);
+            if (range == null) continue;
+
+            int tStart = range[0];
+            int tEnd = range[1];
+
+            int visStart = tStart - scrollbarPos;
+            int visEnd = tEnd - scrollbarPos;
+
+            if (visStart >= linesPerPage || visEnd < 0) continue;
+
+            int topVisual = Math.max(0, visStart);
+            int bottomVisual = Math.min(linesPerPage - 1, visEnd);
+
+            // topVisual 是较小行索引（屏幕下方，Y值大）
+            // bottomVisual 是较大行索引（屏幕上方，Y值小）
+            // 填充范围：从最高行的顶部（小Y）到最低行的底部（大Y）
+            int screenTopY = (int) ((chatBottom - (bottomVisual + 1) * entryHeight) * chatScale);
+            int screenBottomY = (int) ((chatBottom - topVisual * entryHeight) * chatScale);
+
+            boolean isSelected = state.selectedMessages.contains(msg);
+            if (isSelected) {
+                g.fill(chatLeftEdge, screenTopY, chatRightEdge, screenBottomY, 0x500000CC);
+            }
+
+            boolean isRangeStart = state.rangeStart != null && msg.addedTime() == state.rangeStart.addedTime();
+            boolean isRangeEnd = state.rangeEnd != null && msg.addedTime() == state.rangeEnd.addedTime();
+            if (isRangeStart) {
+                g.fill(chatLeftEdge, screenTopY, chatLeftEdge + 3, screenBottomY, 0xFF00CC00);
+            }
+            if (isRangeEnd) {
+                g.fill(chatLeftEdge, screenTopY, chatLeftEdge + 3, screenBottomY, 0xFFCC0000);
+            }
+        }
+
+        // 绘制顶部提示
+        String hint = Component.translatable("light_chat_patch.select.mode_hint").getString();
+        int hintWidth = font.width(hint) + 8;
+        int hintX = (mc.getWindow().getGuiScaledWidth() - hintWidth) / 2;
+        int hintY = 4;
+        g.fill(hintX, hintY, hintX + hintWidth, hintY + 14, 0xB0000000);
+        g.drawCenteredString(font, hint, mc.getWindow().getGuiScaledWidth() / 2, hintY + 3, 0xFFFFFFFF);
+
+        // 绘制确认转发按钮
+        int selectedCount = getAllSelectedMessages(state).size();
+        String confirmLabel = Component.translatable("light_chat_patch.select.confirm", selectedCount).getString();
+        int btnWidth = font.width(confirmLabel) + 16;
+        int btnHeight = 14;
+        EditBox input = ((ChatScreenAccess) screen).lcp$getInput();
+        int btnX = mc.getWindow().getGuiScaledWidth() - btnWidth - 4;
+        int btnY = input.getY() - btnHeight - 2;
+
+        boolean btnHovered = mouseX >= btnX && mouseX <= btnX + btnWidth && mouseY >= btnY && mouseY <= btnY + btnHeight;
+        int bgColor = btnHovered ? 0xD0448844 : 0xB0226644;
+        g.fill(btnX, btnY, btnX + btnWidth, btnY + btnHeight, bgColor);
+        g.drawCenteredString(font, confirmLabel, btnX + btnWidth / 2, btnY + 2, 0xFFFFFFFF);
+        state.confirmButtonBounds = new int[]{btnX, btnY, btnX + btnWidth, btnY + btnHeight};
+    }
+
+    /**
+     * 范围选择操作：根据配置决定全选还是反转
+     * @param state 状态
+     */
+    public static void applyRangeSelection(ChatScreenState state) {
+        if (state.rangeStart == null || state.rangeEnd == null) return;
+
+        normalizeRange(state);
+        List<GuiMessage> messagesInRange = getMessagesInRange(state);
+
+        if (LcpConfig.getInstance().isRangeSelectToggle()) {
+            // 反转模式
+            for (GuiMessage msg : messagesInRange) {
+                if (state.selectedMessages.contains(msg)) {
+                    state.selectedMessages.remove(msg);
+                } else {
+                    state.selectedMessages.add(msg);
+                }
+            }
+        } else {
+            // 全选模式
+            state.selectedMessages.addAll(messagesInRange);
+        }
+
+        // 清除范围标记
+        state.rangeStart = null;
+        state.rangeEnd = null;
+    }
+
+    /**
+     * 规范化选区：确保 rangeStart 在 allMessages 中位于 rangeEnd 之前
+     * 如果终止点在起始点上方，则对调两者身份
+     */
+    private static void normalizeRange(ChatScreenState state) {
+        if (state.rangeStart == null || state.rangeEnd == null) return;
+
+        Minecraft mc = Minecraft.getInstance();
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        int startIdx = -1, endIdx = -1;
+        int startTime = state.rangeStart.addedTime();
+        int endTime = state.rangeEnd.addedTime();
+        for (int i = 0; i < allMessages.size(); i++) {
+            int time = allMessages.get(i).addedTime();
+            if (time == startTime) startIdx = i;
+            if (time == endTime) endIdx = i;
+        }
+
+        if (startIdx >= 0 && endIdx >= 0 && startIdx > endIdx) {
+            GuiMessage tmp = state.rangeStart;
+            state.rangeStart = state.rangeEnd;
+            state.rangeEnd = tmp;
+        }
+    }
+
+    /**
+     * 获取范围内的消息列表
+     */
+    public static List<GuiMessage> getMessagesInRange(ChatScreenState state) {
+        List<GuiMessage> result = new ArrayList<>();
+        if (state.rangeStart == null || state.rangeEnd == null) return result;
+
+        Minecraft mc = Minecraft.getInstance();
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        int startIdx = -1, endIdx = -1;
+        int rangeStartTime = state.rangeStart.addedTime();
+        int rangeEndTime = state.rangeEnd.addedTime();
+        for (int i = 0; i < allMessages.size(); i++) {
+            int time = allMessages.get(i).addedTime();
+            if (time == rangeStartTime) startIdx = i;
+            if (time == rangeEndTime) endIdx = i;
+        }
+        if (startIdx < 0 || endIdx < 0) return result;
+
+        if (startIdx > endIdx) {
+            int tmp = startIdx;
+            startIdx = endIdx;
+            endIdx = tmp;
+        }
+
+        for (int i = startIdx; i <= endIdx; i++) {
+            result.add(allMessages.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * 获取范围选择内的消息集合（用于渲染预览）
+     */
+    private static Set<GuiMessage> getRangeSelectedMessages(ChatScreenState state) {
+        Set<GuiMessage> result = new LinkedHashSet<>();
+        if (state.rangeStart == null || state.rangeEnd == null) {
+            return result;
+        }
+
+        Minecraft mc = Minecraft.getInstance();
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        int startIdx = -1, endIdx = -1;
+        int rangeStartTime = state.rangeStart.addedTime();
+        int rangeEndTime = state.rangeEnd.addedTime();
+        for (int i = 0; i < allMessages.size(); i++) {
+            int time = allMessages.get(i).addedTime();
+            if (time == rangeStartTime) startIdx = i;
+            if (time == rangeEndTime) endIdx = i;
+        }
+        if (startIdx < 0 || endIdx < 0) return result;
+
+        if (startIdx > endIdx) {
+            int tmp = startIdx;
+            startIdx = endIdx;
+            endIdx = tmp;
+        }
+        for (int i = startIdx; i <= endIdx; i++) {
+            result.add(allMessages.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * 获取所有选中消息，按 allMessages 中的顺序排序
+     */
+    private static List<GuiMessage> getAllSelectedMessages(ChatScreenState state) {
+        Minecraft mc = Minecraft.getInstance();
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        List<GuiMessage> sorted = new ArrayList<>();
+        for (GuiMessage msg : allMessages) {
+            if (state.selectedMessages.contains(msg)) {
+                sorted.add(msg);
+            }
+        }
+        return sorted;
+    }
+
+    /**
+     * 确认转发：收集所有选中消息，打开目标选择界面
+     */
+    private static void confirmForward(ChatScreen screen, ChatScreenState state) {
+        List<GuiMessage> selected = getAllSelectedMessages(state);
+        if (selected.isEmpty()) return;
+
+        List<String[]> messages = new ArrayList<>();
+        for (GuiMessage msg : selected) {
+            MessageInfo info = MessageInfo.from(msg);
+            if (info != null) {
+                messages.add(new String[]{"<" + info.getSender() + ">", info.getContent()});
+            }
+        }
+
+        if (messages.isEmpty()) return;
+
+        state.exitSelectionMode();
+
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.setScreen(new ForwardTargetScreen(mc.screen, messages));
         }
     }
 

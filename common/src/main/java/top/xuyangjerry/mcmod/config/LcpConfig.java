@@ -26,6 +26,7 @@ public class LcpConfig {
     private int newlineKey = GLFW.GLFW_KEY_KP_ENTER;
     private boolean preserveChatHistory = true;
     private boolean clickReplyToJump = true;
+    private boolean rangeSelectToggle = true; // true=反转, false=全选
 
     public static LcpConfig getInstance() {
         if (instance == null) {
@@ -52,6 +53,7 @@ public class LcpConfig {
                 instance.newlineKey = data.newlineKey != null ? data.newlineKey : GLFW.GLFW_KEY_KP_ENTER;
                 instance.preserveChatHistory = data.preserveChatHistory != null ? data.preserveChatHistory : true;
                 instance.clickReplyToJump = data.clickReplyToJump != null ? data.clickReplyToJump : true;
+                instance.rangeSelectToggle = data.rangeSelectToggle != null ? data.rangeSelectToggle : true;
             } catch (IOException e) {
                 instance = new LcpConfig();
             }
@@ -80,6 +82,7 @@ public class LcpConfig {
             data.newlineKey = instance.newlineKey;
             data.preserveChatHistory = instance.preserveChatHistory;
             data.clickReplyToJump = instance.clickReplyToJump;
+            data.rangeSelectToggle = instance.rangeSelectToggle;
             Files.writeString(configPath, GSON.toJson(data));
         } catch (IOException e) {
             throw new RuntimeException("Failed to save LightChatPatch config", e);
@@ -207,6 +210,14 @@ public class LcpConfig {
         this.clickReplyToJump = clickReplyToJump;
     }
 
+    public boolean isRangeSelectToggle() {
+        return rangeSelectToggle;
+    }
+
+    public void setRangeSelectToggle(boolean rangeSelectToggle) {
+        this.rangeSelectToggle = rangeSelectToggle;
+    }
+
     private static class LcpConfigData {
         Integer chatHistoryMaxSize;
         String chatHistoryView;
@@ -219,5 +230,6 @@ public class LcpConfig {
         Integer newlineKey;
         Boolean preserveChatHistory;
         Boolean clickReplyToJump;
+        Boolean rangeSelectToggle;
     }
 }

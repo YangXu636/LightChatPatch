@@ -8,6 +8,7 @@ import net.minecraft.client.gui.components.ChatComponent;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.util.ArrayListDeque;
+import top.xuyangjerry.mcmod.LightChatPatch;
 import top.xuyangjerry.mcmod.config.ChatHistoryView;
 import top.xuyangjerry.mcmod.config.LcpConfig;
 
@@ -29,23 +30,30 @@ public final class ChatHistoryManager {
     public static String getCurrentWorldId() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) {
+            LightChatPatch.LOGGER.debug("[ChatHistory] getCurrentWorldId: level is null");
             return null;
         }
         if (mc.hasSingleplayerServer()) {
             IntegratedServer server = mc.getSingleplayerServer();
             if (server != null) {
-                return "sp_" + sanitize(server.getWorldData().getLevelName());
+                String id = "sp_" + sanitize(server.getWorldData().getLevelName());
+                LightChatPatch.LOGGER.info("[ChatHistory] Singleplayer world id: {}", id);
+                return id;
             }
+            LightChatPatch.LOGGER.warn("[ChatHistory] hasSingleplayerServer=true but getSingleplayerServer() is null");
         } else {
             ServerData data = mc.getCurrentServer();
             if (data != null && data.ip != null && !data.ip.isEmpty()) {
-                return "mp_" + sanitize(data.ip);
+                String id = "mp_" + sanitize(data.ip);
+                LightChatPatch.LOGGER.info("[ChatHistory] Multiplayer server id: {}", id);
+                return id;
             }
+            LightChatPatch.LOGGER.warn("[ChatHistory] Multiplayer but getCurrentServer() is null or ip is empty");
         }
         return null;
     }
 
-    private static String sanitize(String s) {
+    public static String sanitize(String s) {
         return s.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
@@ -95,13 +103,15 @@ public final class ChatHistoryManager {
     public static void saveHistory(ChatHistoryView view, List<String> history) {
         Path file = getHistoryFile(view);
         if (file == null) {
+            LightChatPatch.LOGGER.warn("[ChatHistory] saveHistory: file is null for view {}", view);
             return;
         }
         try {
             Files.createDirectories(file.getParent());
             Files.writeString(file, GSON.toJson(history));
+            LightChatPatch.LOGGER.info("[ChatHistory] Saved {} entries to {}", history.size(), file);
         } catch (IOException e) {
-            // ignore
+            LightChatPatch.LOGGER.error("[ChatHistory] Failed to save history to {}", file, e);
         }
     }
 
@@ -121,15 +131,34 @@ public final class ChatHistoryManager {
     public static void loadToRecentChat() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.gui == null) {
+            LightChatPatch.LOGGER.debug("[ChatHistory] loadToRecentChat: mc.gui is null");
             return;
         }
         ChatComponent chat = mc.gui.getChat();
         if (chat == null) {
+            LightChatPatch.LOGGER.debug("[ChatHistory] loadToRecentChat: chat is null");
             return;
         }
+
+        ChatHistoryView view = LcpConfig.getInstance().getChatHistoryView();
+        boolean preserve = LcpConfig.getInstance().isPreserveChatHistory();
+        LightChatPatch.LOGGER.info("[ChatHistory] loadToRecentChat called, view={}, preserve={}", view, preserve);
+        Path historyFile = getHistoryFile(view);
+        if (historyFile == null) {
+            LightChatPatch.LOGGER.warn("[ChatHistory] loadToRecentChat: historyFile is null for view {}", view);
+            return;
+        }
+
+        List<String> history = loadHistory(view);
+        LightChatPatch.LOGGER.info("[ChatHistory] Loaded {} entries from {}", history.size(), historyFile);
+        if (history.isEmpty() && !Files.exists(historyFile)) {
+            LightChatPatch.LOGGER.info("[ChatHistory] History file does not exist and history is empty, skipping");
+            return;
+        }
+
         ArrayListDeque<String> recentChat = chat.getRecentChat();
+        int beforeSize = recentChat.size();
         recentChat.clear();
-        List<String> history = loadHistory(LcpConfig.getInstance().getChatHistoryView());
         int maxSize = LcpConfig.getInstance().getChatHistoryMaxSize();
         int start = Math.max(0, history.size() - maxSize);
         for (int i = start; i < history.size(); i++) {
@@ -138,5 +167,6 @@ public final class ChatHistoryManager {
         if (recentChat.isEmpty()) {
             recentChat.addLast("");
         }
+        LightChatPatch.LOGGER.info("[ChatHistory] recentChat: before={}, after={}", beforeSize, recentChat.size());
     }
 }
