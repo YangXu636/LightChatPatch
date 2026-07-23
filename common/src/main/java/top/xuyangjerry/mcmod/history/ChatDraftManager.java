@@ -3,7 +3,6 @@ package top.xuyangjerry.mcmod.history;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
-import net.minecraft.client.Minecraft;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -15,22 +14,16 @@ public final class ChatDraftManager {
     private ChatDraftManager() {
     }
 
-    private static Path getDraftsDir() {
-        return Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("config")
-                .resolve("light_chat_patch")
-                .resolve("drafts");
-    }
-
-    private static Path getDraftFile(String worldId) {
-        if (worldId == null) {
+    private static Path getDraftFile(top.xuyangjerry.mcmod.config.ChatHistoryView view) {
+        Path dir = HistoryPaths.getStorageDir(view);
+        if (dir == null) {
             return null;
         }
-        return getDraftsDir().resolve("draft_" + worldId + ".json");
+        return dir.resolve("draft.json");
     }
 
     public static String loadDraft() {
-        Path file = getDraftFile(ChatHistoryManager.getCurrentWorldId());
+        Path file = getDraftFile(top.xuyangjerry.mcmod.config.LcpConfig.getInstance().getDraftHistoryView());
         if (file == null || !Files.exists(file)) {
             return null;
         }
@@ -47,7 +40,7 @@ public final class ChatDraftManager {
     }
 
     public static void saveDraft(String text) {
-        Path file = getDraftFile(ChatHistoryManager.getCurrentWorldId());
+        Path file = getDraftFile(top.xuyangjerry.mcmod.config.LcpConfig.getInstance().getDraftHistoryView());
         if (file == null) {
             return;
         }
@@ -62,7 +55,7 @@ public final class ChatDraftManager {
     }
 
     public static void clearDraft() {
-        Path file = getDraftFile(ChatHistoryManager.getCurrentWorldId());
+        Path file = getDraftFile(top.xuyangjerry.mcmod.config.LcpConfig.getInstance().getDraftHistoryView());
         if (file == null || !Files.exists(file)) {
             return;
         }

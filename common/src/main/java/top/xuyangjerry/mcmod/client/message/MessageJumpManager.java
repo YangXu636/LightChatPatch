@@ -1,8 +1,12 @@
 package top.xuyangjerry.mcmod.client.message;
 
+import com.google.gson.Gson;
+import com.mojang.serialization.JsonOps;
 import net.minecraft.client.GuiMessage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.ChatComponent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.util.Mth;
 import top.xuyangjerry.mcmod.mixin.client.ChatComponentAccess;
 
@@ -10,9 +14,10 @@ import java.util.*;
 
 public final class MessageJumpManager {
     private static final MessageJumpManager INSTANCE = new MessageJumpManager();
+    private static final Gson GSON = new Gson();
 
     private final Map<String, GuiMessage> messageIdMap = new LinkedHashMap<>();
-    private long messageCounter = 0;
+    private static final int MAX_CACHE = 1000;
 
     private MessageJumpManager() {
     }
@@ -22,52 +27,101 @@ public final class MessageJumpManager {
     }
 
     /**
-     * 将消息加入本地列表，返回分配的唯一 ID。
-     * 如果消息已存在（引用相等），返回已有 ID。
+     * 为消息生成稳定 ID（基于 addedTime + 内容 JSON 的 SHA-1 哈希）。
+     * 同一条消息（同会话内相同 tick + 相同内容）生成相同的 ID。
+     */
+    private String generateStableId(GuiMessage message) {
+        String contentJson = null;
+        try {
+            contentJson = GSON.toJson(
+                    ComponentSerialization.CODEC.encodeStart(JsonOps.INSTANCE, message.content()).getOrThrow()
+            );
+        } catch (Exception ignored) {
+        }
+        return top.xuyangjerry.mcmod.history.ChatBoxHistoryManager.generateStableUuid(
+                message.addedTime(), contentJson);
+    }
+
+    /**
+     * 将消息加入映射，返回稳定 ID。
      */
     public synchronized String addMessage(GuiMessage message) {
-        // 先检查是否已存在
+        // 先检查是否已存在（引用相等）
         for (Map.Entry<String, GuiMessage> entry : messageIdMap.entrySet()) {
             if (entry.getValue() == message) {
                 return entry.getKey();
             }
         }
 
-        String id = generateMessageId(message);
+        String id = generateStableId(message);
         messageIdMap.put(id, message);
+        trimCache();
+        return id;
+    }
 
-        int maxCache = 500;
-        if (messageIdMap.size() > maxCache) {
+    /**
+     * 注册历史消息（从文件加载的）到映射表。
+     * 用于退出重进后恢复回复跳转能力。
+     */
+    public synchronized void registerHistoricalMessage(String uuid, GuiMessage message) {
+        if (uuid == null || message == null) return;
+        messageIdMap.put(uuid, message);
+        trimCache();
+    }
+
+    private void trimCache() {
+        if (messageIdMap.size() > MAX_CACHE) {
             Iterator<String> it = messageIdMap.keySet().iterator();
-            while (messageIdMap.size() > maxCache && it.hasNext()) {
+            while (messageIdMap.size() > MAX_CACHE && it.hasNext()) {
                 it.next();
                 it.remove();
             }
         }
-        return id;
-    }
-
-    private String generateMessageId(GuiMessage message) {
-        String sender = null;
-        MessageInfo info = MessageInfo.from(message);
-        if (info != null) {
-            sender = info.getSender();
-        }
-        long timestamp = System.currentTimeMillis();
-        messageCounter++;
-        return String.format("%d_%d_%s", timestamp, messageCounter,
-                sender != null ? sender.hashCode() : 0);
     }
 
     /**
-     * 获取消息 ID。如果消息不在本地列表中，会自动添加。
+     * 获取消息的稳定 ID。
      */
     public synchronized String getMessageId(GuiMessage message) {
         return addMessage(message);
     }
 
+    /**
+     * 根据 ID 查找消息。
+     * 先查精确匹配（引用相等），再按内容匹配回退。
+     */
     public synchronized GuiMessage findMessageById(String id) {
-        return messageIdMap.get(id);
+        if (id == null) return null;
+        GuiMessage cached = messageIdMap.get(id);
+        if (cached != null) return cached;
+
+        // 缓存中没有，尝试在 allMessages 中按内容匹配
+        // （历史消息加载后可能因为引用变化找不到）
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gui == null) return null;
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        for (GuiMessage msg : allMessages) {
+            String msgId = generateStableId(msg);
+            if (id.equals(msgId)) {
+                // 找到匹配，更新缓存
+                messageIdMap.put(id, msg);
+                return msg;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 跳转到指定 ID 的消息。
+     * 返回 false 表示目标消息不在当前列表中。
+     */
+    public boolean jumpToMessageById(String id) {
+        GuiMessage msg = findMessageById(id);
+        if (msg == null) return false;
+        return jumpToMessage(msg);
     }
 
     /**
@@ -79,46 +133,21 @@ public final class MessageJumpManager {
         if (targetMessage == null) return false;
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc.gui == null) return false;
+        if (mc.gui == null || mc.gui.getChat() == null) return false;
 
         ChatComponent chat = mc.gui.getChat();
         ChatComponentAccess access = (ChatComponentAccess) chat;
-        List<GuiMessage> allMessages = access.lcp$getAllMessages();
+
+        // 使用与转发选择模式一致的定位方式（基于 addedTime）
+        int[] range = ChatMessageLocator.getMessageTrimmedRange(targetMessage);
+        if (range == null) return false;
+        int trimmedStartIndex = range[0];
+        int trimmedEndIndex = range[1];
+
         List<GuiMessage.Line> trimmed = access.lcp$getTrimmedMessages();
+        if (trimmed.isEmpty()) return false;
 
-        if (allMessages.isEmpty() || trimmed.isEmpty()) return false;
-
-        // 1. 在 allMessages 中找到目标消息的索引（引用相等）
-        int messageIndex = -1;
-        for (int i = 0; i < allMessages.size(); i++) {
-            if (allMessages.get(i) == targetMessage) {
-                messageIndex = i;
-                break;
-            }
-        }
-        if (messageIndex < 0) return false;
-
-        // 2. 计算该消息在 trimmedMessages 中的起始和结束行索引
-        int trimmedStartIndex = -1;
-        int trimmedEndIndex = -1;
-        int msgCount = 0;
-        for (int i = 0; i < trimmed.size(); i++) {
-            if (msgCount == messageIndex) {
-                if (trimmedStartIndex < 0) {
-                    trimmedStartIndex = i;
-                }
-            }
-            if (trimmed.get(i).endOfEntry()) {
-                if (msgCount == messageIndex) {
-                    trimmedEndIndex = i;
-                    break;
-                }
-                msgCount++;
-            }
-        }
-        if (trimmedStartIndex < 0 || trimmedEndIndex < 0) return false;
-
-        // 3. 计算视野范围
+        // 计算视野范围
         double chatScale = mc.options.chatScale().get();
         double chatLineSpacing = mc.options.chatLineSpacing().get();
         int entryHeight = Math.max(1, (int) (9.0 * (1.0 + chatLineSpacing)));
@@ -130,13 +159,13 @@ public final class MessageJumpManager {
         int viewStart = scrollbarPos;
         int viewEnd = scrollbarPos + linesPerPage;
 
-        // 4. 检查目标消息是否已在视野内（有交集即可）
+        // 检查目标消息是否已在视野内（有交集即可）
         boolean inView = trimmedEndIndex >= viewStart && trimmedStartIndex < viewEnd;
         if (inView) {
-            return true; // 已在视野内，无需滚动
+            return true;
         }
 
-        // 5. 不在视野内：滚动到让消息显示在视野中央
+        // 不在视野内：滚动到让消息显示在视野中央
         int msgCenter = (trimmedStartIndex + trimmedEndIndex) / 2;
         int targetScroll = msgCenter - linesPerPage / 2;
 
@@ -151,7 +180,6 @@ public final class MessageJumpManager {
     public void clear() {
         synchronized (this) {
             messageIdMap.clear();
-            messageCounter = 0;
         }
     }
 }

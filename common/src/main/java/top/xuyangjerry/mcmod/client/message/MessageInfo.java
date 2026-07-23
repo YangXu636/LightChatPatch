@@ -23,7 +23,8 @@ public final class MessageInfo {
     public static MessageInfo from(GuiMessage message) {
         Component component = message.content();
         if (component.getContents() instanceof TranslatableContents tc) {
-            if (CHAT_TYPE_TEXT.equals(tc.getKey())) {
+            String key = tc.getKey();
+            if (CHAT_TYPE_TEXT.equals(key)) {
                 Object[] args = tc.getArgs();
                 if (args.length >= 2) {
                     String sender = args[0] instanceof Component c ? c.getString() : String.valueOf(args[0]);
@@ -31,10 +32,16 @@ public final class MessageInfo {
                     return new MessageInfo(sender, content, true, message);
                 }
             }
-            // 其他可翻译的系统消息（join/leave/death/achievement 等）归为「系统」
+            // 私聊消息不可选取
+            if ("commands.message.display.incoming".equals(key) ||
+                "commands.message.display.outgoing".equals(key)) {
+                return null;
+            }
+            // 其他可翻译消息（join/leave/death/achievement 等）归为「系统」
             return new MessageInfo(SYSTEM_SENDER, component.getString(), false, message);
         }
-        return null;
+        // PlainTextContents 或其他类型（如 /tellraw）
+        return new MessageInfo("?", component.getString(), false, message);
     }
 
     public GuiMessage getMessage() {

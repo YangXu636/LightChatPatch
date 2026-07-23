@@ -27,6 +27,11 @@ public class LcpConfig {
     private boolean preserveChatHistory = true;
     private boolean clickReplyToJump = true;
     private boolean rangeSelectToggle = true; // true=反转, false=全选
+    private ChatHistoryView draftHistoryView = ChatHistoryView.CURRENT_WORLD;
+    private int chatMaxLength = 256;
+    private int replyTruncateThreshold = 50;
+    private int replyTruncateHead = 15;
+    private int replyTruncateTail = 10;
 
     public static LcpConfig getInstance() {
         if (instance == null) {
@@ -54,6 +59,11 @@ public class LcpConfig {
                 instance.preserveChatHistory = data.preserveChatHistory != null ? data.preserveChatHistory : true;
                 instance.clickReplyToJump = data.clickReplyToJump != null ? data.clickReplyToJump : true;
                 instance.rangeSelectToggle = data.rangeSelectToggle != null ? data.rangeSelectToggle : true;
+                instance.draftHistoryView = data.draftHistoryView != null ? ChatHistoryView.fromKey(data.draftHistoryView) : ChatHistoryView.CURRENT_WORLD;
+                instance.chatMaxLength = data.chatMaxLength != null ? data.chatMaxLength : 256;
+                instance.replyTruncateThreshold = data.replyTruncateThreshold != null ? data.replyTruncateThreshold : 50;
+                instance.replyTruncateHead = data.replyTruncateHead != null ? data.replyTruncateHead : 15;
+                instance.replyTruncateTail = data.replyTruncateTail != null ? data.replyTruncateTail : 10;
             } catch (IOException e) {
                 instance = new LcpConfig();
             }
@@ -83,6 +93,11 @@ public class LcpConfig {
             data.preserveChatHistory = instance.preserveChatHistory;
             data.clickReplyToJump = instance.clickReplyToJump;
             data.rangeSelectToggle = instance.rangeSelectToggle;
+            data.draftHistoryView = instance.draftHistoryView.getKey();
+            data.chatMaxLength = instance.chatMaxLength;
+            data.replyTruncateThreshold = instance.replyTruncateThreshold;
+            data.replyTruncateHead = instance.replyTruncateHead;
+            data.replyTruncateTail = instance.replyTruncateTail;
             Files.writeString(configPath, GSON.toJson(data));
         } catch (IOException e) {
             throw new RuntimeException("Failed to save LightChatPatch config", e);
@@ -218,6 +233,46 @@ public class LcpConfig {
         this.rangeSelectToggle = rangeSelectToggle;
     }
 
+    public ChatHistoryView getDraftHistoryView() {
+        return draftHistoryView;
+    }
+
+    public void setDraftHistoryView(ChatHistoryView draftHistoryView) {
+        this.draftHistoryView = draftHistoryView;
+    }
+
+    public int getChatMaxLength() {
+        return chatMaxLength;
+    }
+
+    public void setChatMaxLength(int chatMaxLength) {
+        this.chatMaxLength = Math.max(256, Math.min(32767, chatMaxLength));
+    }
+
+    public int getReplyTruncateThreshold() {
+        return replyTruncateThreshold;
+    }
+
+    public void setReplyTruncateThreshold(int replyTruncateThreshold) {
+        this.replyTruncateThreshold = Math.max(10, Math.min(256, replyTruncateThreshold));
+    }
+
+    public int getReplyTruncateHead() {
+        return replyTruncateHead;
+    }
+
+    public void setReplyTruncateHead(int replyTruncateHead) {
+        this.replyTruncateHead = Math.max(3, Math.min(100, replyTruncateHead));
+    }
+
+    public int getReplyTruncateTail() {
+        return replyTruncateTail;
+    }
+
+    public void setReplyTruncateTail(int replyTruncateTail) {
+        this.replyTruncateTail = Math.max(3, Math.min(100, replyTruncateTail));
+    }
+
     private static class LcpConfigData {
         Integer chatHistoryMaxSize;
         String chatHistoryView;
@@ -231,5 +286,10 @@ public class LcpConfig {
         Boolean preserveChatHistory;
         Boolean clickReplyToJump;
         Boolean rangeSelectToggle;
+        String draftHistoryView;
+        Integer chatMaxLength;
+        Integer replyTruncateThreshold;
+        Integer replyTruncateHead;
+        Integer replyTruncateTail;
     }
 }

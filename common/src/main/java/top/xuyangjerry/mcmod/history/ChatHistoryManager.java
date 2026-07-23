@@ -57,33 +57,12 @@ public final class ChatHistoryManager {
         return s.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
-    private static Path getHistoryDir() {
-        return Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("config")
-                .resolve("light_chat_patch")
-                .resolve("history");
-    }
-
     private static Path getHistoryFile(ChatHistoryView view) {
-        String filename;
-        switch (view) {
-            case GLOBAL:
-                filename = "global.json";
-                break;
-            case CURRENT_VERSION:
-                filename = "version_" + sanitize(Minecraft.getInstance().getLaunchedVersion()) + ".json";
-                break;
-            case CURRENT_WORLD:
-                String worldId = getCurrentWorldId();
-                if (worldId == null) {
-                    return null;
-                }
-                filename = "world_" + worldId + ".json";
-                break;
-            default:
-                return null;
+        Path dir = HistoryPaths.getStorageDir(view);
+        if (dir == null) {
+            return null;
         }
-        return getHistoryDir().resolve(filename);
+        return dir.resolve("send_history.json");
     }
 
     public static List<String> loadHistory(ChatHistoryView view) {
@@ -116,6 +95,10 @@ public final class ChatHistoryManager {
     }
 
     public static void addMessage(ChatHistoryView view, String message) {
+        // 记录玩家手动发送的所有内容（包括指令）
+        if (message == null || message.isBlank()) {
+            return;
+        }
         List<String> history = loadHistory(view);
         if (!history.isEmpty() && history.get(history.size() - 1).equals(message)) {
             return;
@@ -168,5 +151,16 @@ public final class ChatHistoryManager {
             recentChat.addLast("");
         }
         LightChatPatch.LOGGER.info("[ChatHistory] recentChat: before={}, after={}", beforeSize, recentChat.size());
+    }
+
+    public static void deleteChatHistory() {
+        Path file = getHistoryFile(LcpConfig.getInstance().getChatHistoryView());
+        if (file != null && Files.exists(file)) {
+            try {
+                Files.delete(file);
+            } catch (IOException e) {
+                // ignore
+            }
+        }
     }
 }

@@ -119,6 +119,39 @@ public final class ChatMessageLocator {
     }
 
     /**
+     * 根据消息的 addedTime 计算其在 trimmedMessages 中的起始和结束行索引。
+     * 与转发选择模式使用的定位方式一致，确保多行消息范围准确。
+     *
+     * @return int[2] = {startIndex, endIndex}，找不到返回 null
+     */
+    public static int[] getMessageTrimmedRange(GuiMessage targetMessage) {
+        if (targetMessage == null) return null;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gui == null || mc.gui.getChat() == null) return null;
+
+        ChatComponent chat = mc.gui.getChat();
+        ChatComponentAccess access = (ChatComponentAccess) chat;
+        java.util.List<GuiMessage.Line> trimmed = access.lcp$getTrimmedMessages();
+        if (trimmed.isEmpty()) return null;
+
+        int targetTime = targetMessage.addedTime();
+        int rangeStart = -1;
+        int rangeEnd = -1;
+
+        for (int i = 0; i < trimmed.size(); i++) {
+            if (trimmed.get(i).addedTime() == targetTime) {
+                if (rangeStart < 0) rangeStart = i;
+                rangeEnd = i;
+            } else if (rangeStart >= 0) {
+                break;
+            }
+        }
+
+        if (rangeStart < 0) return null;
+        return new int[]{rangeStart, rangeEnd};
+    }
+
+    /**
      * @return the visual line index under the mouse, or -1 if none.
      */
     public static int getVisualLineIndexAtMouse(double mouseY) {

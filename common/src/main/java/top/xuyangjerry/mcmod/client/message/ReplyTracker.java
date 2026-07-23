@@ -68,6 +68,16 @@ public final class ReplyTracker {
         return replyToOriginal.get(replyMessage);
     }
 
+    /**
+     * 注册历史消息的回复关系（从文件加载时调用）。
+     * 用于退出重进后恢复回复跳转能力。
+     */
+    public synchronized void registerHistoricalReply(GuiMessage replyMessage, String originalMessageId) {
+        if (replyMessage == null || originalMessageId == null) return;
+        processedMessages.add(replyMessage);
+        replyToOriginal.put(replyMessage, originalMessageId);
+    }
+
     public synchronized void clear() {
         processedMessages.clear();
         replyToOriginal.clear();

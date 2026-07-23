@@ -45,6 +45,7 @@ public final class ChatScreenHandler {
     private static final WeakHashMap<ChatScreen, ChatScreenState> STATES = new WeakHashMap<>();
     private static boolean wasLevelNull = true;
     private static boolean chatBoxHistoryLoaded = false;
+    private static boolean justSentMessage = false;
 
     private ChatScreenHandler() {
     }
@@ -89,6 +90,15 @@ public final class ChatScreenHandler {
      * 在 ChatScreen 初始化时调用。返回 true 表示首次初始化（调用方应注册 per-screen 事件）。
      */
     public static boolean onChatScreenInit(ChatScreen screen) {
+        // 每次初始化都设置输入框最大字符长度（re-init 可能重建 EditBox）
+        int maxLen = LcpConfig.getInstance().getChatMaxLength();
+        if (maxLen != 256) {
+            EditBox input = ((ChatScreenAccess) screen).lcp$getInput();
+            if (input != null) {
+                input.setMaxLength(maxLen);
+            }
+        }
+
         ChatScreenState state = STATES.get(screen);
         if (state != null) {
             return false; // 已初始化，是 re-init
@@ -122,6 +132,12 @@ public final class ChatScreenHandler {
             String draft = ChatDraftManager.loadDraft();
             if (draft != null && !draft.isEmpty()) {
                 ChatScreenAccess access = (ChatScreenAccess) screen;
+                // onChatScreenInit 在 ChatScreen.init() 之后执行，EditBox 已创建
+                // 直接设置 EditBox 的值，而非仅设置 initial 字段
+                EditBox input = access.lcp$getInput();
+                if (input != null) {
+                    input.setValue(draft);
+                }
                 access.lcp$setInitial(draft);
                 access.lcp$setIsDraft(true);
             }
@@ -167,8 +183,9 @@ public final class ChatScreenHandler {
             String input = getInputValue(screen);
             if (input != null && !input.isBlank()) {
                 if (!input.startsWith("/")) {
+                    String truncatedContent = truncateReplyContent(state.replyingTo.getContent());
                     String replyText = Component.translatable("light_chat_patch.reply.format",
-                            state.replyingTo.getSender(), state.replyingTo.getContent(), input).getString();
+                            state.replyingTo.getSender(), truncatedContent, input).getString();
                     ((ChatScreenAccess) screen).lcp$getInput().setValue(replyText);
 
                     // 设置 pendingReply，等待服务端回环后建立关联
@@ -198,6 +215,13 @@ public final class ChatScreenHandler {
                 } else if (isSendKey && isNewlineKey) {
                     return false;
                 } else if (isSendKey) {
+                    // 在交给原版处理前，记录玩家手动发送的内容（包括指令）
+                    String text = input.getValue();
+                    if (text != null && !text.isBlank()) {
+                        ChatHistoryManager.addMessage(
+                                LcpConfig.getInstance().getChatHistoryView(), text);
+                        justSentMessage = true;
+                    }
                     return false;
                 } else if (isNewlineKey) {
                     input.insertText("\n");
@@ -233,26 +257,28 @@ public final class ChatScreenHandler {
     // ==================== Feature 2: 草稿保存 + 历史持久化 ====================
 
     /**
-     * 在 ChatScreen 关闭时调用。保存草稿并持久化历史。
+     * 在 ChatScreen 关闭时调用。保存草稿和聊天框历史。
+     * 发送历史已在按发送键时记录，不再从 recentChat 保存。
      */
     public static void onChatScreenRemove(ChatScreen screen) {
-        ChatScreenState state = STATES.get(screen);
-        STATES.remove(screen); // 清理状态
+        // 不手动移除 STATES，让 WeakHashMap 在 ChatScreen 被 GC 时自动清理
+        // 这样从子界面（RangeActionScreen/PlayerFilterScreen）返回时状态得以保留
 
-        if (!LcpConfig.getInstance().isSaveDraftOnClose()) {
-            persistRecentChat();
-            return;
+        if (LcpConfig.getInstance().isSaveDraftOnClose()) {
+            if (justSentMessage) {
+                // 发送消息导致的关闭，清除草稿
+                ChatDraftManager.clearDraft();
+                justSentMessage = false;
+            } else {
+                // 非发送导致的关闭（如死亡/退出），保存草稿
+                String inputText = getInputValue(screen);
+                if (inputText != null && !inputText.isBlank()) {
+                    ChatDraftManager.saveDraft(inputText);
+                } else {
+                    ChatDraftManager.clearDraft();
+                }
+            }
         }
-
-        // 通过 input 是否为空判断是否发送了消息（发送后 input 会被清空）
-        String inputText = getInputValue(screen);
-        if (inputText != null && !inputText.isBlank()) {
-            ChatDraftManager.saveDraft(inputText);
-        } else {
-            ChatDraftManager.clearDraft();
-        }
-
-        persistRecentChat();
 
         if (LcpConfig.getInstance().isPreserveChatHistory()) {
             ChatBoxHistoryManager.saveChatBoxHistory();
@@ -266,13 +292,6 @@ public final class ChatScreenHandler {
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private static void persistRecentChat() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.gui == null) return;
-        List<String> history = new ArrayList<>(mc.gui.getChat().getRecentChat());
-        ChatHistoryManager.saveHistory(LcpConfig.getInstance().getChatHistoryView(), history);
     }
 
     private static void trackExistingMessages() {
@@ -764,17 +783,15 @@ public final class ChatScreenHandler {
             case ChatScreenState.ACTION_SET_RANGE_START -> {
                 if (state != null && info != null) {
                     state.rangeStart = info.getMessage();
+                    // 设置起点后检查是否已形成选区（起点和终点都有）
+                    tryOpenRangeActionScreen(screen, state);
                 }
             }
             case ChatScreenState.ACTION_SET_RANGE_END -> {
                 if (state != null && info != null) {
                     state.rangeEnd = info.getMessage();
-                    // 设置终点后立即规范化选区（翻转起始点/终止点）
-                    if (state.rangeStart != null) {
-                        normalizeRange(state);
-                        Minecraft mc = Minecraft.getInstance();
-                        mc.setScreen(new top.xuyangjerry.mcmod.client.screen.RangeActionScreen(screen, state));
-                    }
+                    // 设置终点后检查是否已形成选区
+                    tryOpenRangeActionScreen(screen, state);
                 }
             }
             case ChatScreenState.ACTION_CLEAR_RANGE -> {
@@ -843,13 +860,9 @@ public final class ChatScreenHandler {
         // 第一行：回复标题
         String titleText = Component.translatable("light_chat_patch.reply.replying_to",
                 state.replyingTo.getSender()).getString();
-        
-        // 第二行：消息内容预览（截断）
-        String contentPreview = state.replyingTo.getContent();
-        int maxContentWidth = screenWidth - 20;
-        if (font.width(contentPreview) > maxContentWidth) {
-            contentPreview = font.substrByWidth(Component.literal(contentPreview), maxContentWidth - 10).getString() + "...";
-        }
+
+        // 第二行：消息内容预览（超长时按字符数头尾截断，中间用省略号代替）
+        String contentPreview = truncateReplyContent(state.replyingTo.getContent());
 
         int titleWidth = font.width(titleText);
         int contentWidth = font.width(contentPreview);
@@ -880,6 +893,21 @@ public final class ChatScreenHandler {
         state.replyBarCloseBounds = new int[]{closeX, closeY, closeX + closeSize, closeY + closeSize};
     }
 
+    /**
+     * 按字符数截断回复内容：超过阈值时保留头尾，中间用省略号代替。
+     * 阈值和头尾保留数从配置读取。
+     */
+    private static String truncateReplyContent(String content) {
+        if (content == null || content.isEmpty()) return "";
+        LcpConfig config = LcpConfig.getInstance();
+        int threshold = config.getReplyTruncateThreshold();
+        if (content.length() <= threshold) return content;
+        int head = config.getReplyTruncateHead();
+        int tail = config.getReplyTruncateTail();
+        if (content.length() <= head + tail) return content;
+        return content.substring(0, head) + "..." + content.substring(content.length() - tail);
+    }
+
     private static void drawHighlightedMessage(GuiGraphics g, ChatScreenState state) {
         if (state.highlightedMessageId == null || System.currentTimeMillis() > state.highlightEndTime) {
             return;
@@ -890,86 +918,42 @@ public final class ChatScreenHandler {
             return;
         }
 
+        // 使用与转发选择模式一致的定位方式（基于 addedTime）
+        int[] range = ChatMessageLocator.getMessageTrimmedRange(target);
+        if (range == null) return;
+        int tStart = range[0];
+        int tEnd = range[1];
+
         Minecraft mc = Minecraft.getInstance();
         ChatComponent chat = mc.gui.getChat();
         ChatComponentAccess access = (ChatComponentAccess) chat;
-        List<GuiMessage> allMessages = access.lcp$getAllMessages();
-        List<GuiMessage.Line> trimmed = access.lcp$getTrimmedMessages();
-
-        int messageIndex = -1;
-        for (int i = 0; i < allMessages.size(); i++) {
-            if (allMessages.get(i) == target) {
-                messageIndex = i;
-                break;
-            }
-        }
-
-        if (messageIndex < 0) {
-            return;
-        }
-
-        int trimmedStartIndex = 0;
-        int trimmedEndIndex = -1;
-        int messageCount = 0;
-
-        for (int i = 0; i < trimmed.size(); i++) {
-            if (messageCount == messageIndex) {
-                if (trimmedStartIndex == 0 && i > 0) {
-                    trimmedStartIndex = i;
-                }
-            }
-            if (trimmed.get(i).endOfEntry()) {
-                if (messageCount == messageIndex) {
-                    trimmedEndIndex = i;
-                    break;
-                }
-                messageCount++;
-            }
-        }
-
-        if (trimmedEndIndex < 0) {
-            return;
-        }
-
-        if (trimmedStartIndex == 0) {
-            int prevCount = 0;
-            for (int i = 0; i < trimmed.size() && i <= trimmedEndIndex; i++) {
-                if (trimmed.get(i).endOfEntry()) {
-                    if (prevCount == messageIndex - 1) {
-                        trimmedStartIndex = i + 1;
-                        break;
-                    }
-                    prevCount++;
-                }
-            }
-            if (trimmedStartIndex == 0) {
-                trimmedStartIndex = 0;
-            }
-        }
-
         int scrollbarPos = access.lcp$getChatScrollbarPos();
-        int startVisualIndex = trimmedStartIndex - scrollbarPos;
-        int endVisualIndex = trimmedEndIndex - scrollbarPos;
-
-        if (endVisualIndex < 0 || startVisualIndex >= trimmed.size()) {
-            return;
-        }
-
-        startVisualIndex = Math.max(0, startVisualIndex);
-        endVisualIndex = Math.min(trimmed.size() - 1, endVisualIndex);
 
         double chatScale = mc.options.chatScale().get();
-        int screenWidth = mc.getWindow().getGuiScaledWidth();
         int screenHeight = mc.getWindow().getGuiScaledHeight();
         int chatBottom = Mth.floor((screenHeight - 40) / (float) chatScale);
         double chatLineSpacing = mc.options.chatLineSpacing().get();
         int entryHeight = Math.max(1, (int) (9.0 * (1.0 + chatLineSpacing)));
+        double chatHeightFocused = mc.options.chatHeightFocused().get();
+        int chatHeight = Mth.floor(160.0 * chatHeightFocused + 20.0);
+        int linesPerPage = chatHeight / entryHeight;
 
-        int topY = (int) ((chatBottom - (startVisualIndex + 1) * entryHeight) * chatScale);
-        int bottomY = (int) ((chatBottom - endVisualIndex * entryHeight) * chatScale);
+        int visStart = tStart - scrollbarPos;
+        int visEnd = tEnd - scrollbarPos;
+
+        if (visStart >= linesPerPage || visEnd < 0) return;
+
+        int topVisual = Math.max(0, visStart);
+        int bottomVisual = Math.min(linesPerPage - 1, visEnd);
+
+        // topVisual 是较小行索引（屏幕下方，Y值大）
+        // bottomVisual 是较大行索引（屏幕上方，Y值小）
+        // 填充范围：从最高行的顶部（小Y）到最低行的底部（大Y）
+        int screenTopY = (int) ((chatBottom - (bottomVisual + 1) * entryHeight) * chatScale);
+        int screenBottomY = (int) ((chatBottom - topVisual * entryHeight) * chatScale);
 
         int leftX = 4;
-        int rightX = (int) (chatScale * (Math.ceil((Mth.floor(280.0 * chatScale + 40.0)) / chatScale) + 4));
+        int rightX = ChatMessageLocator.getChatRightEdge();
 
         float alpha = 1.0f;
         long remaining = state.highlightEndTime - System.currentTimeMillis();
@@ -978,7 +962,7 @@ public final class ChatScreenHandler {
         }
 
         int color = (int) (alpha * 100) << 24 | 66 << 16 | 134 << 8 | 244;
-        g.fill(leftX, topY, rightX, bottomY, color);
+        g.fill(leftX, screenTopY, rightX, screenBottomY, color);
     }
 
     private static void handleReplyBarClick(ChatScreenState state, int mouseX, int mouseY) {
@@ -1160,6 +1144,16 @@ public final class ChatScreenHandler {
     }
 
     /**
+     * 尝试打开选区操作界面：当起始点和终止点都已设置时，规范化并打开 RangeActionScreen
+     */
+    private static void tryOpenRangeActionScreen(ChatScreen screen, ChatScreenState state) {
+        if (state.rangeStart == null || state.rangeEnd == null) return;
+        normalizeRange(state);
+        Minecraft mc = Minecraft.getInstance();
+        mc.setScreen(new top.xuyangjerry.mcmod.client.screen.RangeActionScreen(screen, state));
+    }
+
+    /**
      * 规范化选区：确保 rangeStart 在 allMessages 中位于 rangeEnd 之前
      * 如果终止点在起始点上方，则对调两者身份
      */
@@ -1271,6 +1265,8 @@ public final class ChatScreenHandler {
                 sorted.add(msg);
             }
         }
+        // allMessages 是 newest-first，转发需要 oldest-first（最早的先发）
+        java.util.Collections.reverse(sorted);
         return sorted;
     }
 
