@@ -1,0 +1,41 @@
+{
+	"schemaVersion": 1,
+	"id": "light_chat_patch",
+	"version": "${version}",
+	"name": "Light Chat Patch",
+	"description": "A lightweight chat enhancement mod for Minecraft",
+	"authors": [
+		"XuYangJerry"
+	],
+	"contact": {
+		"homepage": "https://github.com/XuYangJerry/LightChatPatch",
+		"sources": "https://github.com/XuYangJerry/LightChatPatch"
+	},
+	"license": "MIT",
+	"icon": "assets/light_chat_patch/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"top.xuyangjerry.mcmod.lcp.fabric.LightChatPatch"
+		],
+		"client": [
+			"top.xuyangjerry.mcmod.lcp.fabric.client.FabricLightChatPatchClient"
+		],
+		"server": [
+			"top.xuyangjerry.mcmod.lcp.fabric.LightChatPatchServer"
+		]
+	},
+	"mixins": [
+		"light_chat_patch.mixins.json",
+		{
+			"config": "light_chat_patch.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

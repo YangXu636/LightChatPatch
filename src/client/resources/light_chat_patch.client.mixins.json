@@ -1,0 +1,14 @@
+{
+	"required": false,
+	"package": "top.xuyangjerry.mcmod.lcp.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"ScreenAccess",
+		"ChatScreenAccess",
+		"ChatComponentAccess",
+		"OptionsSubScreenAccess"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
